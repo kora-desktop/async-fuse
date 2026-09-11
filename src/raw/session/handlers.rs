@@ -1217,9 +1217,14 @@ pub(super) async fn handle_getxattr_inline<FS: Filesystem + Send + Sync + 'stati
         Ok(reply_xattr) => match reply_xattr {
             ReplyXAttr::Size(size) => {
                 let getxattr_out = fuse_getxattr_out { size, _padding: 0 };
+                let err_code = if getxattr_in.size == 0 {
+                    0
+                } else {
+                    libc::ERANGE
+                };
                 let out_header = fuse_out_header {
                     len: (FUSE_OUT_HEADER_SIZE + FUSE_GETXATTR_OUT_SIZE) as u32,
-                    error: libc::ERANGE,
+                    error: err_code,
                     unique: item.unique,
                 };
                 let mut data = Vec::with_capacity(FUSE_OUT_HEADER_SIZE + FUSE_GETXATTR_OUT_SIZE);
@@ -1243,7 +1248,6 @@ pub(super) async fn handle_getxattr_inline<FS: Filesystem + Send + Sync + 'stati
                 get_bincode_config()
                     .serialize_into(&mut data, &out_header)
                     .expect("serialize header");
-                data.extend_from_slice(&data_vec);
                 let _ = ctx
                     .resp_for(item.unique)
                     .unbounded_send(Either::Right((data, data_vec)));
@@ -1320,7 +1324,6 @@ pub(super) async fn handle_listxattr_inline<FS: Filesystem + Send + Sync + 'stat
                 get_bincode_config()
                     .serialize_into(&mut data, &out_header)
                     .expect("serialize header");
-                data.extend_from_slice(&data_vec);
                 let _ = ctx
                     .resp_for(item.unique)
                     .unbounded_send(Either::Right((data, data_vec)));
