@@ -61,6 +61,21 @@ pub trait Filesystem {
         Err(libc::ENOSYS.into())
     }
 
+    /// get file attributes and the birth time, for `statx(2)` (Linux 6.6+). `flags` are
+    /// the caller's `AT_STATX_*` sync flags and `mask` the `STATX_*` fields it asked for.
+    /// The default answers `ENOSYS`, after which the kernel uses [`getattr`](Self::getattr)
+    /// for the rest of the mount and reports no birth time.
+    async fn statx(
+        &self,
+        req: Request,
+        inode: Inode,
+        fh: Option<u64>,
+        flags: u32,
+        mask: u32,
+    ) -> Result<ReplyStatx> {
+        Err(libc::ENOSYS.into())
+    }
+
     /// set file attributes. If `fh` is None, means `fh` is not set.
     async fn setattr(
         &self,

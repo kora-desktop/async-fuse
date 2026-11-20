@@ -10,7 +10,8 @@ use crate::helper::mode_from_kind_and_perm;
 use crate::mount_options::DEFAULT_MAX_WRITE;
 use crate::raw::abi::{
     fuse_attr, fuse_attr_out, fuse_bmap_out, fuse_entry_out, fuse_kstatfs, fuse_lseek_out,
-    fuse_open_out, fuse_poll_out, fuse_statfs_out, fuse_write_out,
+    fuse_open_out, fuse_poll_out, fuse_statfs_out, fuse_statx, fuse_statx_out, fuse_sx_time,
+    fuse_write_out, STATX_BASIC_STATS, STATX_BTIME,
 };
 #[cfg(feature = "file-lock")]
 use crate::raw::abi::{fuse_file_lock, fuse_lk_out};
@@ -142,6 +143,64 @@ impl From<ReplyAttr> for fuse_attr_out {
             attr_valid_nsec: attr.ttl.subsec_nanos(),
             dummy: 0,
             attr: attr.attr.into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Ord, PartialOrd, Eq, PartialEq, Hash)]
+/// statx reply.
+pub struct ReplyStatx {
+    /// the attribute TTL.
+    pub ttl: Duration,
+    /// the attribute.
+    pub attr: FileAttr,
+    /// the birth time, or `None` when the filesystem doesn't keep one.
+    pub btime: Option<Timestamp>,
+}
+
+impl From<ReplyStatx> for fuse_statx_out {
+    fn from(reply: ReplyStatx) -> Self {
+        let attr = reply.attr;
+        let mode = fuse_attr::from(attr).mode;
+        let mut mask = STATX_BASIC_STATS;
+        if reply.btime.is_some() {
+            mask |= STATX_BTIME;
+        }
+        let time = |t: Timestamp| fuse_sx_time {
+            tv_sec: t.sec,
+            tv_nsec: t.nsec,
+            _reserved: 0,
+        };
+        // FileAttr.rdev is the kernel's new_encode_dev() form, as in fuse_attr.
+        let rdev = attr.rdev;
+        fuse_statx_out {
+            attr_valid: reply.ttl.as_secs(),
+            attr_valid_nsec: reply.ttl.subsec_nanos(),
+            flags: 0,
+            _spare: [0; 2],
+            stat: fuse_statx {
+                mask,
+                blksize: attr.blksize,
+                attributes: 0,
+                nlink: attr.nlink,
+                uid: attr.uid,
+                gid: attr.gid,
+                mode: mode as u16,
+                _spare0: 0,
+                ino: attr.ino,
+                size: attr.size,
+                blocks: attr.blocks,
+                attributes_mask: 0,
+                atime: time(attr.atime),
+                btime: reply.btime.map(time).unwrap_or_default(),
+                ctime: time(attr.ctime),
+                mtime: time(attr.mtime),
+                rdev_major: (rdev >> 8) & 0xfff,
+                rdev_minor: (rdev & 0xff) | ((rdev >> 12) & 0xfff00),
+                dev_major: 0,
+                dev_minor: 0,
+                _spare2: [0; 14],
+            },
         }
     }
 }
@@ -468,5 +527,121 @@ impl From<ReplyXTimes> for crate::raw::abi::fuse_getxtimes_out {
             bkuptimensec: t.bkuptime.nsec,
             crtimensec: t.crtime.nsec,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bincode::Options;
+
+    use super::*;
+    use crate::helper::get_bincode_config;
+    use crate::raw::abi::{fuse_opcode, fuse_statx_in, FUSE_STATX_OUT_SIZE};
+
+    fn attr(kind: FileType, rdev: u32) -> FileAttr {
+        FileAttr {
+            ino: 7,
+            size: 5,
+            blocks: 1,
+            atime: Timestamp::new(10, 1),
+            mtime: Timestamp::new(20, 2),
+            ctime: Timestamp::new(30, 3),
+            #[cfg(target_os = "macos")]
+            crtime: Timestamp::new(0, 0),
+            kind,
+            perm: 0o640,
+            nlink: 1,
+            uid: 1000,
+            gid: 100,
+            rdev,
+            #[cfg(target_os = "macos")]
+            flags: 0,
+            blksize: 4096,
+        }
+    }
+
+    fn encode(reply: ReplyStatx) -> Vec<u8> {
+        let out: fuse_statx_out = reply.into();
+        get_bincode_config().serialize(&out).unwrap()
+    }
+
+    fn u32_at(data: &[u8], at: usize) -> u32 {
+        u32::from_le_bytes(data[at..at + 4].try_into().unwrap())
+    }
+
+    fn i64_at(data: &[u8], at: usize) -> i64 {
+        i64::from_le_bytes(data[at..at + 8].try_into().unwrap())
+    }
+
+    // Offsets are those of struct fuse_statx_out in include/uapi/linux/fuse.h:
+    // 32 bytes of header, then struct fuse_statx.
+    #[test]
+    fn statx_reply_has_the_kernel_layout() {
+        let data = encode(ReplyStatx {
+            ttl: Duration::new(1, 5),
+            attr: attr(FileType::RegularFile, 0),
+            btime: Some(Timestamp::new(1_600_000_000, 7)),
+        });
+        assert_eq!(data.len(), 288);
+        assert_eq!(FUSE_STATX_OUT_SIZE, 288);
+        assert_eq!(i64_at(&data, 0), 1);
+        assert_eq!(u32_at(&data, 8), 5);
+        assert_eq!(u32_at(&data, 32), STATX_BASIC_STATS | STATX_BTIME);
+        assert_eq!(u32_at(&data, 36), 4096);
+        assert_eq!(u32_at(&data, 52), 1000);
+        assert_eq!(
+            u16::from_le_bytes([data[60], data[61]]),
+            (libc::S_IFREG | 0o640) as u16
+        );
+        assert_eq!(i64_at(&data, 64), 7);
+        assert_eq!(i64_at(&data, 32 + 64), 10);
+        assert_eq!(i64_at(&data, 32 + 80), 1_600_000_000);
+        assert_eq!(u32_at(&data, 32 + 88), 7);
+        assert_eq!(i64_at(&data, 32 + 96), 30);
+        assert_eq!(i64_at(&data, 32 + 112), 20);
+    }
+
+    #[test]
+    fn statx_reply_without_btime_leaves_it_out() {
+        let data = encode(ReplyStatx {
+            ttl: Duration::ZERO,
+            attr: attr(FileType::Directory, 0),
+            btime: None,
+        });
+        assert_eq!(u32_at(&data, 32), STATX_BASIC_STATS);
+        assert_eq!(i64_at(&data, 32 + 80), 0);
+    }
+
+    #[test]
+    fn statx_reply_splits_rdev() {
+        let (major, minor) = (4u32, 300u32);
+        let rdev = (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12);
+        let data = encode(ReplyStatx {
+            ttl: Duration::ZERO,
+            attr: attr(FileType::CharDevice, rdev),
+            btime: None,
+        });
+        assert_eq!(u32_at(&data, 32 + 128), major);
+        assert_eq!(u32_at(&data, 32 + 132), minor);
+    }
+
+    #[test]
+    fn statx_request_parses() {
+        assert!(matches!(
+            fuse_opcode::try_from(52),
+            Ok(fuse_opcode::FUSE_STATX)
+        ));
+        let mut data = Vec::new();
+        for word in [1u32, 0] {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        data.extend_from_slice(&9u64.to_le_bytes());
+        for word in [0u32, STATX_BASIC_STATS | STATX_BTIME] {
+            data.extend_from_slice(&word.to_le_bytes());
+        }
+        let statx_in: fuse_statx_in = get_bincode_config().deserialize(&data).unwrap();
+        assert_eq!(statx_in.getattr_flags, 1);
+        assert_eq!(statx_in.fh, 9);
+        assert_eq!(statx_in.sx_mask, 0xfff);
     }
 }

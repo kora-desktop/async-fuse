@@ -155,6 +155,67 @@ pub(super) async fn handle_getattr_inline<FS: Filesystem + Send + Sync + 'static
     let _ = ctx.resp_for(item.unique).unbounded_send(Either::Left(data));
 }
 
+pub(super) async fn handle_statx_inline<FS: Filesystem + Send + Sync + 'static>(
+    ctx: &DispatchCtx<FS>,
+    item: WorkItem,
+) {
+    let statx_in = match get_bincode_config().deserialize::<fuse_statx_in>(&item.data) {
+        Err(err) => {
+            debug!(
+                unique = item.unique,
+                "deserialize fuse_statx_in failed {}", err
+            );
+            let data = reply_error_in_worker(libc::EINVAL.into(), item.unique)
+                .expect("serialize out_header");
+            let _ = ctx.resp_for(item.unique).unbounded_send(Either::Left(data));
+            return;
+        }
+        Ok(v) => v,
+    };
+    let fh = if statx_in.getattr_flags & FUSE_GETATTR_FH > 0 {
+        Some(statx_in.fh)
+    } else {
+        None
+    };
+    debug!(
+        unique = item.unique,
+        inode = item.in_header.nodeid,
+        "statx (worker)"
+    );
+    let result = ctx
+        .fs
+        .statx(
+            Request::from(&item),
+            item.in_header.nodeid,
+            fh,
+            statx_in.sx_flags,
+            statx_in.sx_mask,
+        )
+        .await;
+    let data = match result {
+        Err(err) => reply_error_in_worker(err, item.unique).expect("serialize out_header"),
+        Ok(reply) => statx_reply_data(item.unique, reply.into()),
+    };
+    let _ = ctx.resp_for(item.unique).unbounded_send(Either::Left(data));
+}
+
+/// The bytes of a successful `FUSE_STATX` answer.
+pub(super) fn statx_reply_data(unique: u64, statx_out: fuse_statx_out) -> Vec<u8> {
+    let out_header = fuse_out_header {
+        len: (FUSE_OUT_HEADER_SIZE + FUSE_STATX_OUT_SIZE) as u32,
+        error: 0,
+        unique,
+    };
+    let mut data = Vec::with_capacity(FUSE_OUT_HEADER_SIZE + FUSE_STATX_OUT_SIZE);
+    get_bincode_config()
+        .serialize_into(&mut data, &out_header)
+        .expect("serialize header");
+    get_bincode_config()
+        .serialize_into(&mut data, &statx_out)
+        .expect("serialize statx_out");
+    data
+}
+
 pub(super) async fn handle_open_inline<FS: Filesystem + Send + Sync + 'static>(
     ctx: &DispatchCtx<FS>,
     item: WorkItem,

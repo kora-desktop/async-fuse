@@ -106,6 +106,28 @@ impl<FS: Filesystem + std::marker::Sync> Filesystem for LoggingFileSystem<FS> {
         result
     }
 
+    async fn statx(
+        &self,
+        req: Request,
+        inode: Inode,
+        fh: Option<u64>,
+        flags: u32,
+        mask: u32,
+    ) -> Result<ReplyStatx> {
+        let id = self.next_log_id.fetch_add(1, Ordering::Relaxed);
+        let method = "statx";
+        let args = vec![
+            ("inode", inode.to_string()),
+            ("fh", fh.map(|v| v.to_string()).unwrap_or_default()),
+            ("flags", flags.to_string()),
+            ("mask", mask.to_string()),
+        ];
+        self.log_start(&req, id, method, &args);
+        let result = self.inner.statx(req, inode, fh, flags, mask).await;
+        self.log_result(id, method, &result);
+        result
+    }
+
     async fn setattr(
         &self,
         req: Request,
