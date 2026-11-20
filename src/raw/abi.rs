@@ -352,6 +352,7 @@ pub enum fuse_opcode {
     FUSE_COPY_FILE_RANGE = 47,
     // FUSE_SETUPMAPPING = 48,
     // FUSE_REMOVEMAPPING = 49,
+    FUSE_STATX = 52,
     #[cfg(target_os = "macos")]
     FUSE_SETVOLNAME = 61,
     #[cfg(target_os = "macos")]
@@ -422,6 +423,7 @@ impl TryFrom<u32> for fuse_opcode {
             47 => Ok(fuse_opcode::FUSE_COPY_FILE_RANGE),
             // 48 => Ok(fuse_opcode::FUSE_SETUPMAPPING),
             // 49 => Ok(fuse_opcode::FUSE_REMOVEMAPPING),
+            52 => Ok(fuse_opcode::FUSE_STATX),
             #[cfg(target_os = "macos")]
             61 => Ok(fuse_opcode::FUSE_SETVOLNAME),
             #[cfg(target_os = "macos")]
@@ -546,6 +548,68 @@ pub struct fuse_attr_out {
     pub attr_valid_nsec: u32,
     pub dummy: u32,
     pub attr: fuse_attr,
+}
+
+/// `statx` mask bits a FUSE server can answer (`linux/stat.h`).
+pub const STATX_BASIC_STATS: u32 = 0x7ff;
+pub const STATX_BTIME: u32 = 0x800;
+
+/// Request of `FUSE_STATX` (protocol 7.39, Linux 6.6). The kernel sends it whatever
+/// minor version was negotiated, and stops after the first `ENOSYS`.
+#[derive(Debug, Deserialize)]
+#[allow(non_camel_case_types)]
+pub struct fuse_statx_in {
+    pub getattr_flags: u32,
+    pub(crate) _reserved: u32,
+    pub fh: u64,
+    pub sx_flags: u32,
+    pub sx_mask: u32,
+}
+
+#[derive(Debug, Default, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub struct fuse_sx_time {
+    pub tv_sec: i64,
+    pub tv_nsec: u32,
+    pub(crate) _reserved: i32,
+}
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub struct fuse_statx {
+    pub mask: u32,
+    pub blksize: u32,
+    pub attributes: u64,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub(crate) _spare0: u16,
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub attributes_mask: u64,
+    pub atime: fuse_sx_time,
+    pub btime: fuse_sx_time,
+    pub ctime: fuse_sx_time,
+    pub mtime: fuse_sx_time,
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+    pub(crate) _spare2: [u64; 14],
+}
+
+pub const FUSE_STATX_OUT_SIZE: usize = mem::size_of::<fuse_statx_out>();
+
+#[derive(Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[allow(non_camel_case_types)]
+pub struct fuse_statx_out {
+    pub attr_valid: u64,
+    pub attr_valid_nsec: u32,
+    pub flags: u32,
+    pub(crate) _spare: [u64; 2],
+    pub stat: fuse_statx,
 }
 
 #[cfg(target_os = "macos")]

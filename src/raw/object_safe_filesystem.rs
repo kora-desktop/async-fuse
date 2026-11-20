@@ -70,6 +70,18 @@ pub trait ObjectSafeFilesystem: Send + Sync {
         Err(libc::ENOSYS.into())
     }
 
+    /// get file attributes and the birth time, for `statx(2)`.
+    async fn statx(
+        &self,
+        req: Request,
+        inode: Inode,
+        fh: Option<u64>,
+        flags: u32,
+        mask: u32,
+    ) -> Result<ReplyStatx> {
+        Err(libc::ENOSYS.into())
+    }
+
     /// set file attributes. If `fh` is None, means `fh` is not set.
     async fn setattr(
         &self,
@@ -581,6 +593,17 @@ where
         flags: u32,
     ) -> Result<ReplyAttr> {
         Filesystem::getattr(self, req, inode, fh, flags).await
+    }
+
+    async fn statx(
+        &self,
+        req: Request,
+        inode: Inode,
+        fh: Option<u64>,
+        flags: u32,
+        mask: u32,
+    ) -> Result<ReplyStatx> {
+        Filesystem::statx(self, req, inode, fh, flags, mask).await
     }
 
     async fn setattr(

@@ -180,6 +180,7 @@ async fn process_work_item<FS: Filesystem + Send + Sync + 'static>(
             FUSE_FORGET   => handle_forget_inline,
             FUSE_LOOKUP   => handle_lookup_inline,
             FUSE_GETATTR  => handle_getattr_inline,
+            FUSE_STATX    => handle_statx_inline,
             FUSE_OPEN     => handle_open_inline,
             FUSE_READ     => handle_read_inline,
             FUSE_WRITE    => handle_write_inline,

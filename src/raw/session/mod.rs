@@ -1255,6 +1255,12 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
                         }
                     }
 
+                    fuse_opcode::FUSE_STATX => {
+                        if !workers_active {
+                            self.handle_statx(request, in_header, data_ref, &fs).await;
+                        }
+                    }
+
                     fuse_opcode::FUSE_SETATTR => {
                         self.handle_setattr(request, in_header, data_ref, &fs).await;
                     }
@@ -1957,6 +1963,70 @@ impl<FS: Filesystem + Send + Sync + 'static> Session<FS> {
 
                     data
                 }
+            };
+
+            let _ = resp_sender.send(Either::Left(data)).await;
+        });
+    }
+
+    #[instrument(skip(self, data, fs))]
+    async fn handle_statx(
+        &mut self,
+        request: Request,
+        in_header: fuse_in_header,
+        data: &[u8],
+        fs: &Arc<FS>,
+    ) {
+        let statx_in = match get_bincode_config().deserialize::<fuse_statx_in>(data) {
+            Err(err) => {
+                error!(
+                    "deserialize fuse_statx_in failed {}, request unique {}",
+                    err, request.unique
+                );
+
+                reply_error_in_place(libc::EINVAL.into(), request, self.response_sender()).await;
+
+                return;
+            }
+
+            Ok(statx_in) => statx_in,
+        };
+
+        let mut resp_sender = self.response_sender().clone();
+        let fs = fs.clone();
+
+        spawn(debug_span!("fuse_statx"), async move {
+            debug!("statx unique {} inode {}", request.unique, in_header.nodeid);
+
+            let fh = if statx_in.getattr_flags & FUSE_GETATTR_FH > 0 {
+                Some(statx_in.fh)
+            } else {
+                None
+            };
+
+            let result = fs
+                .statx(
+                    request,
+                    in_header.nodeid,
+                    fh,
+                    statx_in.sx_flags,
+                    statx_in.sx_mask,
+                )
+                .await;
+            let data = match result {
+                Err(err) => {
+                    let out_header = fuse_out_header {
+                        len: FUSE_OUT_HEADER_SIZE as u32,
+                        error: err.into(),
+                        unique: request.unique,
+                    };
+
+                    get_bincode_config()
+                        .serialize(&out_header)
+                        .expect("won't happened")
+                }
+
+                Ok(reply) => handlers::statx_reply_data(request.unique, reply.into()),
             };
 
             let _ = resp_sender.send(Either::Left(data)).await;
